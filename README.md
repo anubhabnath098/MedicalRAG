@@ -38,7 +38,7 @@ MedicalRAG is a full-stack RAG (Retrieval-Augmented Generation) application tail
 ## Screenshots
 
 ### Main Application
-**Chat Interface**
+**Login**
 
 ![Login](screenshots/login.png)
 
