@@ -6,92 +6,60 @@ Splits on sentence boundaries (NLTK) then groups into word-count windows
 with configurable overlap to prevent mid-clause cuts.
 """
 
+from langchain_experimental.text_splitter import SemanticChunker
+from utils.embedding import SentenceTransformerEmbeddings
+from config import settings
 import re
 from typing import List, Dict
 
-import nltk
 
-# Ensure punkt tokeniser data is available
-for resource in ("punkt", "punkt_tab"):
-    try:
-        nltk.data.find(f"tokenizers/{resource}")
-    except LookupError:
-        nltk.download(resource, quiet=True)
-
-from nltk.tokenize import sent_tokenize
-
-
-class SemanticChunker:
+def semantic_chunk(
+    text: str,
+    source_name: str,
+    embeddings=None,
+    breakpoint_type: str = "percentile",  # or "standard_deviation", "interquartile"
+    breakpoint_threshold: float = 60.0,
+) -> List[Dict]:
     """
-    Sliding-window semantic chunker.
+    Parameters
+    ----------
+    text                : Raw document text.
+    source_name         : Identifier embedded in each chunk's metadata.
+    embeddings          : LangChain-compatible embeddings instance.
+    breakpoint_type     : Strategy for detecting semantic boundaries.
+    breakpoint_threshold: Sensitivity of the boundary detector.
 
-    Algorithm:
-    1. Normalise whitespace.
-    2. Tokenise into sentences (NLTK punkt).
-    3. Accumulate sentences until the word budget is exceeded.
-    4. Emit chunk; retain the last `overlap` words as carry-over context.
-    5. Repeat until all sentences are consumed.
+    Returns
+    -------
+    List of chunk dicts:
+        {
+            "id"       : "<source_name>_chunk_<n>",
+            "text"     : "<chunk text>",
+            "source"   : "<source_name>",
+            "word_cnt" : <int>
+        }
     """
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
 
-    def __init__(self, chunk_size: int = 300, overlap: int = 50):
-        self.chunk_size = chunk_size
-        self.overlap = overlap
+    if embeddings is None:
+        embeddings = SentenceTransformerEmbeddings(settings.embed_model)
 
-    def chunk(self, text: str, source_name: str) -> List[Dict]:
-        """
-        Parameters
-        ----------
-        text        : Raw document text.
-        source_name : Identifier embedded in each chunk's metadata
-                      (typically the document UUID or filename).
+    splitter = SemanticChunker(
+        embeddings,
+        breakpoint_threshold_type=breakpoint_type,
+        breakpoint_threshold_amount=breakpoint_threshold,
+    )
 
-        Returns
-        -------
-        List of chunk dicts:
-            {
-                "id"       : "<source_name>_chunk_<n>",
-                "text"     : "<chunk text>",
-                "source"   : "<source_name>",
-                "word_cnt" : <int>
-            }
-        """
-        text = re.sub(r"\s+", " ", text).strip()
-        if not text:
-            return []
+    docs = splitter.create_documents([text])
 
-        sentences = sent_tokenize(text)
-        chunks: List[Dict] = []
-        current_words: List[str] = []
-        chunk_id = 0
-
-        for sent in sentences:
-            words = sent.split()
-            if len(current_words) + len(words) > self.chunk_size and current_words:
-                chunk_text = " ".join(current_words)
-                chunks.append(
-                    {
-                        "id": f"{source_name}_chunk_{chunk_id}",
-                        "text": chunk_text,
-                        "source": source_name,
-                        "word_cnt": len(current_words),
-                    }
-                )
-                chunk_id += 1
-                # Slide: carry over the last `overlap` words as context seed
-                carry = current_words[-self.overlap :]
-                current_words = carry + words
-            else:
-                current_words.extend(words)
-
-        # Flush the trailing window
-        if current_words:
-            chunks.append(
-                {
-                    "id": f"{source_name}_chunk_{chunk_id}",
-                    "text": " ".join(current_words),
-                    "source": source_name,
-                    "word_cnt": len(current_words),
-                }
-            )
-
-        return chunks
+    return [
+        {
+            "id": f"{source_name}_chunk_{i}",
+            "text": doc.page_content,
+            "source": source_name,
+            "word_cnt": len(doc.page_content.split()),
+        }
+        for i, doc in enumerate(docs)
+    ]

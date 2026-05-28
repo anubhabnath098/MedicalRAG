@@ -36,7 +36,7 @@ from models.schemas import (
 )
 from services.gemini_service import GeminiService
 from services.groq_service import GroqService
-from utils.chunker import SemanticChunker
+from utils.chunker import semantic_chunk
 from utils.memory_manager import MemoryManager
 from utils.vector_store import VectorStore
 
@@ -54,11 +54,6 @@ class RAGService:
         self.memory = MemoryManager()
         self.gemini = GeminiService()
         self.groq = GroqService()
-        self.chunker = SemanticChunker(
-            chunk_size=settings.chunk_size,
-            overlap=settings.chunk_overlap,
-        )
-
         total_docs = self._count_documents()
         logger.info("RAGService ready — %d total documents in DB", total_docs)
 
@@ -128,7 +123,10 @@ class RAGService:
 
         # Step 2 — Chunk
         doc_id = new_uuid()
-        chunks = self.chunker.chunk(extracted_text, source_name=doc_id)
+        chunks = semantic_chunk(
+            extracted_text,
+            source_name=doc_id
+        )
         logger.info("Chunked '%s' into %d segments", filename, len(chunks))
 
         # Step 3 — Inject user_id into each chunk for FAISS-level scoping

@@ -29,7 +29,7 @@ Memory
 
 import logging
 from typing import Annotated
-
+from config import settings
 from fastapi import (
     APIRouter,
     Depends,
@@ -364,3 +364,14 @@ def delete_memory(entry_id: str, rag: RAGDep, current_user: UserDep) -> MemoryAc
             detail=f"Memory entry '{entry_id}' not found.",
         )
     return MemoryActionResponse(message=f"Memory entry {entry_id} deleted.")
+
+@router.get("/debug/vectorstore", tags=["Debug"])
+async def debug_vectorstore(rag: RAGDep, current_user: UserDep):
+    return {
+        "total_vectors": rag.vector_store.total_vectors,
+        "user_chunks": len([
+            m for m in rag.vector_store.metadata
+            if m.get("user_id") == current_user["user_id"]
+        ]),
+        "threshold": settings.similarity_thresh,
+    }

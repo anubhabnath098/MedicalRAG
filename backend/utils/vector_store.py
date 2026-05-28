@@ -11,17 +11,24 @@ FAISS-backed dense vector store with:
 
 import logging
 from typing import List, Dict, Optional, Set
-
+import os
+import pickle
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
+# from sentence_transformers import SentenceTransformer
+from utils.embedding import SentenceTransformerEmbeddings as SentenceTransformer
+# Add this import at the top of vector_store.py
+from langchain_community.vectorstores.utils import maximal_marginal_relevance
+
 
 logger = logging.getLogger(__name__)
 
 # Multiplier for the FAISS search horizon before user-filtering.
 # e.g. top_k=5, multiplier=30 → search top 150 globally, then filter by user.
 _FILTER_SEARCH_MULTIPLIER = 30
-
+_INDEX_PATH = "data/faiss.index"
+_META_PATH  = "data/faiss_meta.pkl"
+_EMBS_PATH  = "data/faiss_embs.pkl"
 
 class VectorStore:
     """
@@ -43,15 +50,43 @@ class VectorStore:
         logger.info("Loading embedding model: %s", embed_model_name)
         self.encoder = SentenceTransformer(embed_model_name)
         self.dim: int = self.encoder.get_sentence_embedding_dimension()
-        self._build_fresh_index()
-        logger.info("VectorStore ready — dim=%d", self.dim)
-
-    # ── Private helpers ───────────────────────────────────────────────────
+        self._load_or_build()
+        logger.info("VectorStore ready — dim=%d  vectors=%d", self.dim, self.index.ntotal)
 
     def _build_fresh_index(self) -> None:
         self.index = faiss.IndexFlatIP(self.dim)
         self.metadata: List[Dict] = []
         self._embeddings: List[np.ndarray] = []
+
+    def _load_or_build(self) -> None:
+        if (
+            os.path.exists(_INDEX_PATH)
+            and os.path.exists(_META_PATH)
+            and os.path.exists(_EMBS_PATH)
+        ):
+            try:
+                logger.info("Restoring FAISS index from disk…")
+                self.index = faiss.read_index(_INDEX_PATH)
+                with open(_META_PATH, "rb") as f:
+                    self.metadata = pickle.load(f)
+                with open(_EMBS_PATH, "rb") as f:
+                    self._embeddings = pickle.load(f)
+                logger.info("Restored %d vectors from disk", self.index.ntotal)
+            except Exception as e:
+                logger.warning("Failed to restore index (%s) — rebuilding fresh", e)
+                self._build_fresh_index()
+        else:
+            logger.info("No saved index found — building fresh")
+            self._build_fresh_index()
+
+    def _save(self) -> None:
+        os.makedirs("data", exist_ok=True)
+        faiss.write_index(self.index, _INDEX_PATH)
+        with open(_META_PATH, "wb") as f:
+            pickle.dump(self.metadata, f)
+        with open(_EMBS_PATH, "wb") as f:
+            pickle.dump(self._embeddings, f)
+        logger.info("FAISS index persisted — %d vectors", self.index.ntotal)
 
     def _normalise(self, vecs: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
@@ -91,25 +126,26 @@ class VectorStore:
             self.metadata.append(chunk)
             self._embeddings.append(emb)
 
-        logger.info(
-            "Index now contains %d vectors (added %d)",
-            self.index.ntotal,
-            len(chunks),
-        )
+        logger.info("Index now contains %d vectors (added %d)", self.index.ntotal, len(chunks))
+        self._save()  # ← add
         return indices
 
     def retrieve(
         self,
         query: str,
         top_k: int = 5,
-        threshold: float = 0.35,
+        threshold: float = 0.2,
         user_id: Optional[str] = None,
+        mmr_fetch_k: int = 50,
+        mmr_lambda: float = 0.6,
     ) -> List[Dict]:
         """
-        Dense passage retrieval scoped to a specific user.
+        MMR retrieval scoped to a specific user.
 
-        Searches a wider pool globally then post-filters by user_id so that
-        users only ever see their own document chunks.
+        mmr_lambda controls relevance/diversity tradeoff:
+            1.0 = pure relevance (identical to cosine similarity search)
+            0.0 = maximum diversity
+            0.6 = good default for medical docs (avoids returning 5 near-identical chunks)
         """
         if self.index.ntotal == 0:
             return []
@@ -117,28 +153,48 @@ class VectorStore:
         q_emb = self.encoder.encode([query], convert_to_numpy=True)
         q_emb = self._normalise(q_emb).astype("float32")
 
-        # Search wider to account for cross-user filtering
+        # Step 1 — fetch a wide candidate pool globally, then user-filter
         search_k = min(top_k * _FILTER_SEARCH_MULTIPLIER, self.index.ntotal)
         scores, indices = self.index.search(q_emb, search_k)
 
-        results: List[Dict] = []
+        # Step 2 — apply threshold + user filter on candidates
+        candidate_indices = []
+        candidate_embeddings = []
+
         for score, idx in zip(scores[0], indices[0]):
             if idx == -1:
                 continue
-            if float(score) < threshold:
-                break  # scores are sorted descending; no point continuing
-
             meta = self.metadata[idx]
-
-            # ── User isolation ────────────────────────────────────────────
             if user_id is not None and meta.get("user_id") != user_id:
                 continue
+            if float(score) < threshold:
+                continue
+            candidate_indices.append(idx)
+            candidate_embeddings.append(self._embeddings[idx])
 
+        if not candidate_indices:
+            return []
+
+        # Step 3 — run LangChain's MMR over the filtered candidates
+        candidate_matrix = np.stack(candidate_embeddings, axis=0)  # (n_candidates, dim)
+
+        mmr_selected = maximal_marginal_relevance(
+            query_embedding=q_emb[0],           # shape (dim,)
+            embedding_list=candidate_matrix,
+            lambda_mult=mmr_lambda,
+            k=min(top_k, len(candidate_indices)),
+        )
+
+        # Step 4 — build results in MMR-selected order
+        results = []
+        for pos in mmr_selected:
+            idx = candidate_indices[pos]
+            meta = self.metadata[idx]
+            # recompute cosine score for this chunk (already normalised vectors)
+            score = float(np.dot(q_emb[0], self._embeddings[idx]))
             results.append(
-                {**meta, "similarity_score": round(float(score), 4)}
+                {**meta, "similarity_score": round(score, 4)}
             )
-            if len(results) == top_k:
-                break
 
         return results
 
@@ -174,6 +230,7 @@ class VectorStore:
             removed,
             self.index.ntotal,
         )
+        self._save()
         return removed
 
     def get_indexed_sources(self, user_id: Optional[str] = None) -> List[str]:

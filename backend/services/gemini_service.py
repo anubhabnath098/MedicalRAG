@@ -20,6 +20,8 @@ import re
 from typing import Optional
 
 import google.generativeai as genai
+from google.generativeai.types import GenerationConfig
+import base64
 
 from config import settings
 from models.schemas import DocumentSummary
@@ -59,7 +61,7 @@ Given the following medical document text, produce a concise structured summary.
 
 Return ONLY a valid JSON object with exactly these keys:
 {{
-  "core_content": "<2-3 sentence summary of the main medical findings, diagnoses, or prescriptions>",
+  "core_content": "<STRICTLY 1-2 sentences, max 50 words, summarising main findings or prescriptions>",
   "doctor_concerned": "<name and specialty of the primary physician; 'Not mentioned' if absent>",
   "date_time": "<date/time of the medical event or report; 'Not mentioned' if absent>",
   "document_type": "<one of: Prescription, Lab Report, Consultation Note, Discharge Summary, Vaccination Record, Other>"
@@ -96,13 +98,13 @@ DOCUMENT TEXT:
         pdf_part = {
             "inline_data": {
                 "mime_type": "application/pdf",
-                "data": pdf_bytes,
+                "data": base64.b64encode(pdf_bytes).decode("utf-8"),
             }
         }
 
         response = self.model.generate_content(
             [self.OCR_PROMPT, pdf_part],
-            generation_config={"temperature": 0.1, "max_output_tokens": 8192},
+            generation_config=GenerationConfig(temperature=0.1, max_output_tokens=8192),
         )
 
         extracted = response.text.strip()
@@ -116,26 +118,22 @@ DOCUMENT TEXT:
     # ── Summarisation ─────────────────────────────────────────────────────
 
     def summarise_document(self, text: str) -> DocumentSummary:
-        """
-        Given extracted document text, ask Gemini to produce a structured summary.
-
-        Returns a validated DocumentSummary Pydantic model.
-        Falls back to sensible defaults if JSON parsing fails.
-        """
-        prompt = self.SUMMARISE_PROMPT.format(text=text[:6000])  # cap to avoid token overflow
+        prompt = self.SUMMARISE_PROMPT.format(text=text[:6000])
 
         response = self.model.generate_content(
             prompt,
-            generation_config={"temperature": 0.1, "max_output_tokens": 512},
+            generation_config=genai.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=2048,
+                response_mime_type="application/json",  # forces valid JSON output
+            ),
         )
 
-        raw = response.text.strip()
-
-        # Strip markdown code fences if present
-        raw = re.sub(r"^```json\s*|^```\s*|```$", "", raw, flags=re.MULTILINE).strip()
+        if not response.parts:
+            raise ValueError("Gemini returned no content during summarisation.")
 
         try:
-            data = json.loads(raw)
+            data = json.loads(response.text)
             return DocumentSummary(
                 core_content=data.get("core_content", "Unable to extract summary."),
                 doctor_concerned=data.get("doctor_concerned", "Not mentioned"),
@@ -143,10 +141,9 @@ DOCUMENT TEXT:
                 document_type=data.get("document_type", "Other"),
             )
         except (json.JSONDecodeError, KeyError) as exc:
-            logger.warning("Gemini summary JSON parse failed: %s — raw: %s", exc, raw[:200])
-            # Return a safe fallback rather than crashing the upload
+            logger.warning("Gemini summary JSON parse failed: %s — raw: %s", exc, response.text[:200])
             return DocumentSummary(
-                core_content=raw[:500] if raw else "Summary unavailable.",
+                core_content="Summary unavailable.",
                 doctor_concerned="Not mentioned",
                 date_time="Not mentioned",
                 document_type="Other",

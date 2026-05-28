@@ -1054,11 +1054,26 @@ const sendMessage = async (e: React.FormEvent) => {
           {activePage === 'documents' && (
             <div className="p-6">
               <div className="mb-6">
-                <label className="block">
-                  <div className="border-2 border-dashed border-blue-500/30 hover:border-blue-500/50 rounded-lg p-8 text-center cursor-pointer transition-all">
-                    <FileUp size={32} className="mx-auto text-blue-400 mb-2" />
-                    <p className="text-slate-300 font-medium">Upload Documents</p>
-                    <p className="text-slate-500 text-sm">Click to select PDF files</p>
+                <label className={`block ${uploading ? 'pointer-events-none' : ''}`}>
+                  <div className={`border-2 border-dashed rounded-lg p-8 text-center transition-all
+                    ${uploading
+                      ? 'border-blue-500/20 bg-slate-800/20 cursor-not-allowed'
+                      : 'border-blue-500/30 hover:border-blue-500/50 cursor-pointer'
+                    }`}
+                  >
+                    {uploading ? (
+                      <>
+                        <Loader size={32} className="mx-auto text-blue-400 mb-2 animate-spin" />
+                        <p className="text-slate-300 font-medium">Processing document...</p>
+                        <p className="text-slate-500 text-sm">Please wait until upload completes</p>
+                      </>
+                    ) : (
+                      <>
+                        <FileUp size={32} className="mx-auto text-blue-400 mb-2" />
+                        <p className="text-slate-300 font-medium">Upload Documents</p>
+                        <p className="text-slate-500 text-sm">Click to select PDF files</p>
+                      </>
+                    )}
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -1076,15 +1091,21 @@ const sendMessage = async (e: React.FormEvent) => {
                 <div className="mb-4">
                   <div className="bg-slate-800/50 rounded-lg p-4">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-slate-300">Uploading...</span>
-                      <span className="text-sm text-blue-400">{Math.round(uploadProgress)}%</span>
+                      <span className="text-sm text-slate-300 flex items-center gap-2">
+                        <Loader size={14} className="animate-spin text-blue-400" />
+                        Uploading & indexing...
+                      </span>
+                      <span className="text-sm text-blue-400 font-medium">{Math.round(uploadProgress)}%</span>
                     </div>
                     <div className="w-full bg-slate-700/50 rounded-full h-2">
                       <div
-                        className="bg-gradient-to-r from-blue-600 to-cyan-600 h-2 rounded-full transition-all"
+                        className="bg-gradient-to-r from-blue-600 to-cyan-600 h-2 rounded-full transition-all duration-300"
                         style={{ width: `${uploadProgress}%` }}
                       />
                     </div>
+                    <p className="text-xs text-slate-500 mt-2">
+                      OCR → chunking → embedding in progress. Do not close this tab.
+                    </p>
                   </div>
                 </div>
               )}

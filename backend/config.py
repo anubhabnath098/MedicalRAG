@@ -33,13 +33,11 @@ class Settings(BaseSettings):
     # ── Model selection ──────────────────────────────────────────────────
     embed_model: str = "pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb"
     groq_model: str = "llama-3.3-70b-versatile"
-    gemini_model: str = "gemini-3.5-flash"
+    gemini_model: str = "gemini-2.5-flash"
 
     # ── RAG hyper-parameters ─────────────────────────────────────────────
     top_k: int = 5
-    chunk_size: int = 300
-    chunk_overlap: int = 50
-    similarity_thresh: float = 0.35
+    similarity_thresh: float = 0.3
 
     # ── Data directory ───────────────────────────────────────────────────
     data_dir: Path = Path("data")

@@ -18,3 +18,6 @@ __pycache__/
 *.log
 *.env
 venv
+faiss_embs.pkl
+faiss_meta.pkl
+faiss.index
